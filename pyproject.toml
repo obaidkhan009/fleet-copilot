@@ -1,0 +1,29 @@
+[project]
+name = "fleet-copilot"
+version = "0.1.0"
+description = "Agentic AI Fleet Copilot: grounded Q&A, trend insights, and human-approved actions over device telemetry (LangGraph + Claude)."
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "anthropic>=2.0",
+    "langgraph>=1.0",
+    "pydantic>=2.7",
+    "pyyaml>=6.0",
+    "rich>=13.0",
+]
+
+[project.scripts]
+fleet-copilot = "fleet_copilot.cli:main"
+
+[build-system]
+requires = ["uv_build>=0.11.14,<0.12.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
