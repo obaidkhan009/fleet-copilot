@@ -20,12 +20,18 @@ closed: no new events are appended on top of a tampered history) unless
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+
+try:   # POSIX advisory lock so the CLI and the UI can append to the same log safely
+    import fcntl
+except ImportError:  # pragma: no cover - Windows
+    fcntl = None
 
 GENESIS = "0" * 64
 
@@ -45,23 +51,51 @@ class AuditLog:
         self.head_path = self.path.with_name(self.path.name + ".head") if self.path else None
         self._lock = threading.Lock()
         self._entries: list[dict] = []
+        self._size = 0
         if self.path:
             self.path.parent.mkdir(parents=True, exist_ok=True)
-            if self.path.exists():
-                with open(self.path, encoding="utf-8") as fh:
-                    self._entries = [json.loads(l) for l in fh if l.strip()]
+            self._reload()
             if strict:
                 ok, bad = self.verify()
                 if not ok:
                     raise AuditIntegrityError(f"audit log {self.path} failed verification at seq {bad}; "
                                               "refusing to append. Run `fleet-copilot audit verify`.")
 
+    def _reload(self) -> None:
+        if self.path and self.path.exists():
+            with open(self.path, encoding="utf-8") as fh:
+                self._entries = [json.loads(l) for l in fh if l.strip()]
+            self._size = self.path.stat().st_size
+
+    @contextlib.contextmanager
+    def _file_lock(self):
+        if not self.path or fcntl is None:
+            yield
+            return
+        with open(self.path.with_name(self.path.name + ".lock"), "a") as fh:
+            fcntl.flock(fh, fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                fcntl.flock(fh, fcntl.LOCK_UN)
+
+    def _sync(self) -> None:
+        """Another process (CLI and UI side by side) may have appended: re-read before extending the chain."""
+        if self.path and self.path.exists() and self.path.stat().st_size != self._size:
+            self._reload()
+            ok, bad = self.verify()
+            if not ok:
+                raise AuditIntegrityError(f"audit log {self.path} failed verification at seq {bad}; refusing to append.")
+
     @property
     def entries(self) -> list[dict]:
+        with self._lock:
+            self._sync()
         return list(self._entries)
 
     def record(self, event: str, *, tenant_id: str, actor: str, thread_id: str | None = None, **data: Any) -> dict:
-        with self._lock:
+        with self._lock, self._file_lock():
+            self._sync()
             prev = self._entries[-1]["hash"] if self._entries else GENESIS
             body = {
                 "seq": len(self._entries) + 1,
@@ -78,6 +112,7 @@ class AuditLog:
             if self.path:
                 with open(self.path, "a", encoding="utf-8") as fh:
                     fh.write(_canonical(body) + "\n")
+                self._size = self.path.stat().st_size
                 tmp = self.head_path.with_name(self.head_path.name + ".tmp")
                 tmp.write_text(json.dumps({"seq": body["seq"], "hash": body["hash"]}))
                 tmp.replace(self.head_path)   # atomic
