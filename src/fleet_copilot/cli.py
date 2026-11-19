@@ -5,6 +5,7 @@
     fleet-copilot approvals list   --tenant acme-001           conversations waiting for approval
     fleet-copilot approvals resume --tenant acme-001 --thread t-...   review and decide later, from any process
     fleet-copilot explain   --tenant acme-001 [--thread t-...] sentence -> evidence -> tool call -> NDJSON line
+    fleet-copilot ui                                           web UI (needs the extra: uv run --extra ui ...)
     fleet-copilot insights  --tenant acme-001                  run the trend detectors directly (no LLM)
     fleet-copilot audit     verify                             verify the hash chain and head anchor
     fleet-copilot audit     tail --tenant acme-001             recent events for one tenant (--all: operator view)
@@ -271,6 +272,38 @@ def cmd_explain(args) -> int:
     return 0
 
 
+def cmd_ui(args) -> int:
+    import importlib.util
+    import subprocess
+    import time
+    import urllib.request
+    import webbrowser
+    from pathlib import Path
+    if importlib.util.find_spec("streamlit") is None:
+        console.print("The web UI needs Streamlit: run `uv run --extra ui fleet-copilot ui` "
+                      "(or `pip install -e '.[ui]'`).", style="red", markup=False)
+        return 2
+    app = Path(__file__).parent / "ui" / "app.py"
+    url = f"http://localhost:{args.port}"
+    # Headless mode skips Streamlit's first-run e-mail prompt; we open the browser ourselves once it is up.
+    proc = subprocess.Popen([sys.executable, "-m", "streamlit", "run", str(app), "--server.headless", "true", "--server.address", "localhost",
+                             "--server.port", str(args.port), "--browser.gatherUsageStats", "false"])
+    try:
+        for _ in range(60):
+            try:
+                if urllib.request.urlopen(f"{url}/_stcore/health", timeout=1).read().strip() == b"ok":
+                    break
+            except OSError:
+                time.sleep(0.5)
+        console.print(f"Fleet Copilot UI running at [bold]{url}[/bold]  (Ctrl+C to stop)")
+        if not args.no_browser:
+            webbrowser.open(url)
+        return proc.wait()
+    except KeyboardInterrupt:
+        proc.terminate()
+        return 0
+
+
 def cmd_insights(args) -> int:
     from .analytics import run_detectors
     view = TelemetryStore.load(DATA_PATH).scoped(args.tenant)
@@ -340,6 +373,9 @@ def main(argv: list[str] | None = None) -> int:
     common(sp, llm=False)
     sp.add_argument("--thread", help="thread to explain (default: your most recent completed conversation)")
     sp.add_argument("--json", action="store_true")
+    sp = sub.add_parser("ui", help="open the web UI in your browser")
+    sp.add_argument("--port", type=int, default=8501)
+    sp.add_argument("--no-browser", action="store_true", help="do not open a browser window")
     sp = sub.add_parser("insights", help="run trend detectors directly (no LLM)")
     sp.add_argument("--tenant", required=True)
     sp = sub.add_parser("audit", help="inspect the audit log")
@@ -353,7 +389,7 @@ def main(argv: list[str] | None = None) -> int:
         args.actor = f"admin@{args.tenant}"
     try:
         return {"chat": cmd_chat, "ask": cmd_ask, "approvals": cmd_approvals, "explain": cmd_explain,
-                "insights": cmd_insights, "audit": cmd_audit}[args.cmd](args)
+                "ui": cmd_ui, "insights": cmd_insights, "audit": cmd_audit}[args.cmd](args)
     except UnknownTenantError as e:
         console.print(f"[red]Unknown tenant {e}. Known tenants: {', '.join(COMPANY_NAMES)}[/red]")
         return 2

@@ -16,6 +16,10 @@ dependencies = [
 [project.scripts]
 fleet-copilot = "fleet_copilot.cli:main"
 
+[project.optional-dependencies]
+ui = [
+    "streamlit>=1.67.0",
+]
 
 [build-system]
 requires = ["uv_build>=0.11.14,<0.12.0"]
